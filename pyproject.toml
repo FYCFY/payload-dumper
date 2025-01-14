@@ -7,17 +7,26 @@ readme = "README.md"
 repository = "https://github.com/nnsee/payload-dumper"
 homepage = "https://github.com/nnsee/payload-dumper"
 
-[tool.poetry.dependencies]
-python = "^3.10"
-protobuf = "^3.19.1"
-bsdiff4 = "^1.2.1"
-enlighten = "^1.12.2"
-
-[tool.poetry.dev-dependencies]
-
 [tool.poetry.scripts]
-payload_dumper = "payload_dumper:dumper.main"
+payload_dumper = "payload_dumper:main"
+
+[tool.poetry.dependencies]
+python = ">=3.8"
+httpx = ">=0.23.1"  # https://github.com/encode/httpx/pull/2309
+protobuf = ">=3.20.0"  # First version of google.protobuf.internal.builder
+bsdiff4 = ">=1.2.3"  # This version officially supports Python 3.12
+enlighten = ">=1.12.0"  # This version officially supports Python 3.12
+
+[tool.pytest.ini_options]
+pythonpath = "src"
+
+[tool.isort]
+atomic = true
+profile = "black"
+line_length = 89
+skip_gitignore = true
+known_first_party = ["payload_dumper"]
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["poetry-core"]
+build-backend= "poetry.core.masonry.api"
