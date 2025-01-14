@@ -1,20 +1,21 @@
 #!/usr/bin/env python
-from time import sleep
-import struct
-import hashlib
 import bz2
-import sys
-import argparse
-import bsdiff4
+import hashlib
 import io
-import os
-from enlighten import get_manager
+import json
 import lzma
-from multiprocessing import cpu_count
+import os
+import struct
+import sys
+from . import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import update_metadata_pb2 as um
-import zipfile
-import http_file
+from multiprocessing import cpu_count
+
+import bsdiff4
+from enlighten import get_manager
+
+from . import http_file
+from . import update_metadata_pb2 as um
 
 flatten = lambda l: [item for sublist in l for item in sublist]
 
@@ -40,7 +41,7 @@ def verify_contiguous(exts):
 
 class Dumper:
     def __init__(
-        self, payloadfile, out, diff=None, old=None, images="", workers=cpu_count()
+        self, payloadfile, out, diff=None, old=None, images="", workers=cpu_count(), list_partitions=False, extract_metadata=False
     ):
         self.payloadfile = payloadfile
         self.manager = get_manager()
@@ -52,21 +53,29 @@ class Dumper:
         self.old = old
         self.images = images
         self.workers = workers
-        try:
-            self.parse_metadata()
-        except AssertionError:
-            # try zip
-            with zipfile.ZipFile(self.payloadfile, "r") as zip_file:
-                self.payloadfile = zip_file.open("payload.bin", "r")
-            self.parse_metadata()
-            pass
+        self.list_partitions = list_partitions
+        self.extract_metadata = extract_metadata
+
+        if self.extract_metadata:
+            self.extract_and_display_metadata()
+        else:
+            try:
+                self.parse_metadata()
+            except AssertionError:
+                # try zip
+                with zipfile.ZipFile(self.payloadfile, "r") as zip_file:
+                    self.payloadfile = zip_file.open("payload.bin", "r")
+                self.parse_metadata()
+                pass
+
+            if self.list_partitions:
+                self.list_partitions_info()
 
     def update_download_progress(self, prog, total):
         if self.download_progress is None and prog != total:
             self.download_progress = self.manager.counter(
-                    total=total,
-                    desc="download",
-                    unit="b", leave=False)
+                total=total, desc="download", unit="b", leave=False
+            )
         if self.download_progress is not None:
             self.download_progress.update(prog - self.download_progress.count)
             if prog == total:
@@ -74,6 +83,9 @@ class Dumper:
                 self.download_progress = None
 
     def run(self):
+        if self.list_partitions or self.extract_metadata:
+            return
+
         if self.images == "":
             partitions = self.dam.partitions
         else:
@@ -124,7 +136,7 @@ class Dumper:
 
         with ThreadPoolExecutor(max_workers=self.workers) as executor:
             for part in partitions:
-                partition_name = part['partition'].partition_name
+                partition_name = part["partition"].partition_name
                 progress_bars[partition_name] = self.manager.counter(
                     total=len(part["operations"]),
                     desc=f"{partition_name}",
@@ -132,18 +144,20 @@ class Dumper:
                     leave=True,
                 )
 
-            futures = {executor.submit(self.dump_part, part, update_progress): part for part in partitions}
+            futures = {
+                executor.submit(self.dump_part, part, update_progress): part
+                for part in partitions
+            }
 
             for future in as_completed(futures):
                 part = futures[future]
-                partition_name = part['partition'].partition_name
+                partition_name = part["partition"].partition_name
                 try:
                     future.result()
                     progress_bars[partition_name].close()
                 except Exception as exc:
                     print(f"{partition_name} - processing generated an exception: {exc}")
                     progress_bars[partition_name].close()
-
 
     def parse_metadata(self):
         head_len = 4 + 8 + 8 + 4
@@ -165,7 +179,6 @@ class Dumper:
         manifest = self.payloadfile.read(manifest_size)
         self.metadata_signature = self.payloadfile.read(metadata_signature_size)
         self.data_offset = self.payloadfile.tell()
-
         self.dam = um.DeltaArchiveManifest()
         self.dam.ParseFromString(manifest)
         self.block_size = self.dam.block_size
@@ -244,61 +257,46 @@ class Dumper:
             data = self.data_for_op(op, out_file, old_file)
             update_callback(part["partition"].partition_name, 1)
 
+    def list_partitions_info(self):
+        partitions_info = []
+        for partition in self.dam.partitions:
+            size_in_blocks = sum(ext.num_blocks for op in partition.operations for ext in op.dst_extents)
+            size_in_bytes = size_in_blocks * self.block_size
+            if size_in_bytes >= 1024**3:
+                size_str = f"{size_in_bytes / 1024**3:.1f}GB"
+            elif size_in_bytes >= 1024**2:
+                size_str = f"{size_in_bytes / 1024**2:.1f}MB"
+            else:
+                size_str = f"{size_in_bytes / 1024:.1f}KB"
+            
+            partitions_info.append({
+                "partition_name": partition.partition_name,
+                "size_in_blocks": size_in_blocks,
+                "size_in_bytes": size_in_bytes,
+                "size_readable": size_str
+            })
+        
+        # Output to JSON file
+        output_file = os.path.join(self.out, "partitions_info.json")
+        with open(output_file, "w") as f:
+            json.dump(partitions_info, f, indent=4)
 
-def main():
-    parser = argparse.ArgumentParser(description="OTA payload dumper")
-    parser.add_argument(
-        "payloadfile", help="payload file name"
-    )
-    parser.add_argument(
-        "--out", default="output", help="output directory (default: 'output')"
-    )
-    parser.add_argument(
-        "--diff",
-        action="store_true",
-        help="extract differential OTA",
-    )
-    parser.add_argument(
-        "--old",
-        default="old",
-        help="directory with original images for differential OTA (default: 'old')",
-    )
-    parser.add_argument(
-        "--partitions",
-        default="",
-        help="comma separated list of partitions to extract (default: extract all)",
-    )
-    parser.add_argument(
-        "--workers",
-        default=cpu_count(),
-        type=int,
-        help="numer of workers (default: CPU count - %d)" % cpu_count(),
-    )
-    args = parser.parse_args()
+        # Print to console in a compact format
+        readable_info = ', '.join(f"{info['partition_name']}({info['size_readable']})" for info in partitions_info)
+        print(readable_info)
+        print(f"\nPartition information saved to {output_file}")
 
-    # Check for --out directory exists
-    if not os.path.exists(args.out):
-        os.makedirs(args.out)
-
-    payload_file = args.payloadfile
-    if payload_file.startswith('http://') or payload_file.startswith("https://"):
-        payload_file = http_file.HttpFile(payload_file)
-    else:
-        payload_file = open(payload_file, 'rb')
-
-    dumper = Dumper(
-        payload_file,
-        args.out,
-        diff=args.diff,
-        old=args.old,
-        images=args.partitions,
-        workers=args.workers,
-    )
-    dumper.run()
-
-    if isinstance(payload_file, http_file.HttpFile):
-        print('\ntotal bytes read from network:', payload_file.total_bytes)
-
-
-if __name__ == "__main__":
-    main()
+    def extract_and_display_metadata(self):
+        # Try to extract and display the metadata file from the zip
+        metadata_path = "META-INF/com/android/metadata"
+        try:
+            with zipfile.ZipFile(self.payloadfile, "r") as zip_file:
+                with zip_file.open(metadata_path) as meta_file:
+                    metadata_content = meta_file.read().decode('utf-8')
+                    output_file = os.path.join(self.out, "metadata")
+                    with open(output_file, "w") as f:
+                        f.write(metadata_content)
+                    print(metadata_content)
+                    print(f"\nMetadata saved to {output_file}")
+        except Exception as e:
+            print(f"Failed to extract {metadata_path}: {e}")
