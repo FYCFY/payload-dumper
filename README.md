@@ -1,66 +1,109 @@
-# payload dumper of online
+# Android ROM 分区提取工具
 
-[中文](docs/README.zh-CN.md)
+这是一个用于从 Android ROM 包中提取分区镜像的工具。它支持两种提取方式：
+1. 从 payload.bin 格式的 ROM 包中提取分区
+2. 从普通 ZIP 格式的 ROM 包中直接提取镜像文件
 
-This is a modified version of payload dumper that supports the following features in addition to the original features:
+## 特点
 
-1. Extract partitions directly from a zip archive containing payload.bin without unzipping it.   
-2. Extract partitions directly from a URL (such as an OTA update URL) containing payload.bin from the network without downloading the entire file.  
+- 支持从 URL 直接提取，无需下载完整 ROM 包
+- 支持从本地文件提取
+- 自动识别 ROM 包格式并选择合适的提取方式
+- 支持提取嵌套 ZIP 包中的镜像文件
+- 多线程处理，提升提取速度
+- 支持断点续传
+- 实时显示下载进度
 
-With this script, you only need a small amount of time and storage space to extract the partitions you want from the OTA update package or address, especially the smaller partitions such as boot, init_boot, vbmeta, etc.
+## 安装要求
 
-Future Outlook: Maybe it can support extracting some files in system partitions?
+- Python >= 3.8
+- pip 包管理器
 
-## usage
+## 安装方法
 
 ```bash
+# 从 GitHub 安装最新版本
 pip install git+https://github.com/5ec1cff/payload-dumper
-payload_dumper --partitions <partitions you need> <file path or url>
 ```
----
 
-# payload dumper
+## 使用方法
 
-Dumps the `payload.bin` image found in Android update images. Has significant performance gains over other tools due to using multiprocessing.
-
-## Installation
-
-### Requirements
-
-- Python3 >= 3.8
-- pip
-
-## Usage
-
-### Dumping the entirety of `payload.bin`
+### 基本用法
 
 ```bash
-payload_dumper payload.bin
+# 从 URL 提取单个分区
+payload_dumper <ROM包URL> <分区名>
+
+# 从本地文件提取单个分区
+payload_dumper <ROM包路径> <分区名>
+
+# 提取多个分区（使用逗号分隔）
+payload_dumper <ROM包URL或路径> -p boot,system,vendor
 ```
 
-### Dumping specific partitions
+### 常用示例
 
-Use a comma-separated list of partitions to dump:
 ```bash
-payload_dumper --partitions boot,dtbo,vendor payload.bin
+# 提取 boot 分区
+payload_dumper https://example.com/rom.zip boot
+
+# 提取 boot 和 system 分区
+payload_dumper https://example.com/rom.zip -p boot,system
+
+# 指定输出目录
+payload_dumper https://example.com/rom.zip boot -o my_output
+
+# 使用64线程提取
+payload_dumper https://example.com/rom.zip boot -w 64
 ```
 
-### Patching older image with OTA
+### 所有可用参数
 
-Assuming the old partitions are in a directory named `old/`:
+| 参数 | 简写 | 说明 | 示例 |
+|------|------|------|------|
+| `<URL/文件>` | - | ROM包的URL或本地文件路径 | `https://example.com/rom.zip` |
+| `<分区名>` | - | 要提取的分区名称 | `boot` |
+| `--partitions` | `-p` | 要提取的分区列表（用逗号分隔） | `-p boot,system,vendor` |
+| `--output` | `-o` | 指定输出目录 | `-o my_output` |
+| `--workers` | `-w` | 指定工作线程数 | `-w 64` |
+| `--diff` | `-d` | 差分更新模式 | `-d` |
+| `--old` | - | 旧版本分区目录（差分更新用） | `--old old_rom` |
+| `--list` | `-l` | 列出所有可用分区 | `-l` |
+| `--metadata` | `-m` | 提取元数据 | `-m` |
+
+### 支持的分区类型
+
+工具可以提取以下格式的镜像文件：
+- `.img` 格式镜像
+- `.bin` 格式镜像
+- `.raw` 格式镜像
+
+### 注意事项
+
+1. 对于 URL 提取，工具会自动：
+   - 先尝试 payload.bin 方式提取
+   - 如果失败，会自动切换到直接提取方式
+2. 对于本地文件，仅支持 payload.bin 方式提取
+3. 默认输出目录为 `output`
+4. 默认使用系统 CPU 核心数作为线程数
+5. 支持断点续传，下载中断后重新运行会继续下载
+
+## 开发相关
+
 ```bash
-payload_dumper --diff payload.bin
-```
-
-## Developing
-
-```shell
+# 克隆仓库
 git clone https://github.com/5ec1cff/payload-dumper
-# run
+
+# 运行
 cd src
 python -m payload_dumper
-# install
+
+# 安装
 cd ..
 pip install .
 ```
+
+## 问题反馈
+
+如果您在使用过程中遇到任何问题，请在 GitHub 上提交 Issue。
 
